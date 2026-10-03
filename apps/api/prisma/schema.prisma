@@ -73,6 +73,19 @@ enum ExportStatus {
   EXPIRED
 }
 
+enum ComparisonStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+  CANCELLED
+}
+
+enum ComparisonTrackRole {
+  BASELINE
+  CANDIDATE
+}
+
 enum GoalStatus {
   OPEN
   IN_PROGRESS
@@ -100,6 +113,7 @@ model User {
   goalProgresses    GoalProgress[]
   auditLogs         AuditLog[]
   dataExports       DataExport[]
+  comparisons       AudioComparison[]
 
   @@map("users")
 }
@@ -178,6 +192,7 @@ model MediaAsset {
   session        PracticeSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   annotations    Annotation[]
   goalProgresses GoalProgress[]
+  comparisonTracks ComparisonTrack[]
 
   @@index([userId, sha256])
   @@index([objectKey])
@@ -310,4 +325,64 @@ model AuditLog {
   @@index([userId, createdAt(sort: Desc)])
   @@index([action, createdAt(sort: Desc)])
   @@map("audit_logs")
+}
+
+model AudioComparison {
+  id             String                @id @default(uuid()) @db.Uuid
+  groupId        String                @map("group_id") @db.Uuid
+  revision       Int                   @default(1)
+  userId         String                @map("user_id") @db.Uuid
+  title          String                @db.VarChar(120)
+  status         ComparisonStatus      @default(PENDING)
+  stage          String                @default("QUEUED") @db.VarChar(40)
+  progressPct    Int                   @default(0) @map("progress_pct")
+  targetLufs     Float                 @default(-23) @map("target_lufs")
+  truePeakDbTp   Float                 @default(-1) @map("true_peak_dbtp")
+  windowMs       Int                   @default(2000) @map("window_ms")
+  hopMs          Int                   @default(500)
+  maxOffsetMs    Int                   @default(1500) @map("max_offset_ms")
+  summary        Json?
+  reportObjectKey String?              @unique @map("report_object_key") @db.Text
+  diffObjectKey  String?               @map("diff_object_key") @db.Text
+  failureCode    String?               @map("failure_code") @db.VarChar(64)
+  failureMessage String?               @map("failure_message") @db.VarChar(500)
+  attempts       Int                   @default(0)
+  cancelRequested Boolean              @default(false) @map("cancel_requested")
+  cancelledAt    DateTime?             @map("cancelled_at") @db.Timestamptz(6)
+  completedAt    DateTime?             @map("completed_at") @db.Timestamptz(6)
+  createdAt      DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user           User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tracks         ComparisonTrack[]
+
+  @@unique([groupId, revision])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, status])
+  @@index([groupId])
+  @@index([status, cancelRequested])
+  @@map("audio_comparisons")
+}
+
+model ComparisonTrack {
+  id           String              @id @default(uuid()) @db.Uuid
+  comparisonId String              @map("comparison_id") @db.Uuid
+  mediaId      String?             @map("media_id") @db.Uuid
+  position     Int
+  role         ComparisonTrackRole
+  label        String              @db.VarChar(120)
+  measuredLufs Float?              @map("measured_lufs")
+  gainDb       Float?              @map("gain_db")
+  peakDb       Float?              @map("peak_db")
+  offsetMs     Int?                @map("offset_ms")
+  correlation  Float?
+  normalizedObjectKey String?       @unique @map("normalized_object_key") @db.Text
+  normalizedReady Boolean         @default(false) @map("normalized_ready")
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  comparison   AudioComparison     @relation(fields: [comparisonId], references: [id], onDelete: Cascade)
+  media        MediaAsset?         @relation(fields: [mediaId], references: [id], onDelete: SetNull)
+
+  @@unique([comparisonId, position])
+  @@index([mediaId])
+  @@map("comparison_tracks")
 }

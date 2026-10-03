@@ -38,6 +38,7 @@ export const METRIC_TYPES = [
 ] as const;
 export const EVIDENCE_REQUIREMENTS = ["NONE", "AUDIO", "SELF_REVIEW", "AUDIO_AND_SELF_REVIEW"] as const;
 export const GOAL_STATUSES = ["OPEN", "IN_PROGRESS", "ACHIEVED", "MISSED", "CANCELLED"] as const;
+export const COMPARISON_STATUSES = ["PENDING", "PROCESSING", "READY", "FAILED", "CANCELLED"] as const;
 
 const requiredText = (label: string, max: number) =>
   z.string().trim().min(1, `${label}不能为空`).max(max, `${label}不能超过 ${max} 个字符`);
@@ -201,6 +202,31 @@ export const createExportSchema = z.object({
   to: z.coerce.date().optional(),
 });
 
+const comparisonTrackInputSchema = z.object({
+  mediaId: z.string().uuid("音频 ID 格式不正确"),
+  label: optionalText(120, "版本标签"),
+});
+
+export const comparisonCreateSchema = z.object({
+  title: requiredText("对比标题", 120),
+  tracks: z
+    .array(comparisonTrackInputSchema)
+    .length(2, "当前仅支持两个版本进行对比（基线 + 候选）"),
+  groupId: z.string().uuid().optional(),
+  targetLufs: z.coerce.number().min(-40).max(-5).default(-23),
+  truePeakDbTp: z.coerce.number().min(-9).max(0).default(-1),
+  windowMs: z.coerce.number().int().min(500).max(10_000).default(2000),
+  hopMs: z.coerce.number().int().min(100).max(5000).default(500),
+  maxOffsetMs: z.coerce.number().int().min(0).max(5000).default(1500),
+});
+
+export const comparisonListQuerySchema = z.object({
+  groupId: z.string().uuid().optional(),
+  status: z.enum(COMPARISON_STATUSES).optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
 export const idSchema = z.string().uuid();
 
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
@@ -210,6 +236,7 @@ export type GoalCategory = (typeof GOAL_CATEGORIES)[number];
 export type MetricType = (typeof METRIC_TYPES)[number];
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 export type EvidenceRequirement = (typeof EVIDENCE_REQUIREMENTS)[number];
+export type ComparisonStatus = (typeof COMPARISON_STATUSES)[number];
 
 export interface ApiErrorBody {
   error: {
@@ -259,6 +286,44 @@ export function isGoalProgressValid(actualValue: number, targetValue: number): b
 
 export function calculateSessionDuration(mediaDurationsMs: Array<number | null | undefined>): number {
   return mediaDurationsMs.reduce<number>((total, duration) => total + (duration && duration > 0 ? duration : 0), 0);
+}
+
+export interface ComparisonSummaryLike {
+  similarityScore: number;
+  overallCorrelation: number;
+  meanRmsDeltaDb: number | null;
+  maxRmsDeltaDb: number | null;
+  coveragePct: number;
+  alignment?: { offsetMs: number; correlation: number };
+}
+
+/** 把机器可读指标组织成中文差异摘要（前端与导出共用同一份口径）。 */
+export function buildComparisonDigest(summary: ComparisonSummaryLike): string[] {
+  const lines: string[] = [];
+  const verdict =
+    summary.similarityScore >= 90
+      ? "高度一致"
+      : summary.similarityScore >= 75
+        ? "整体接近、局部有差异"
+        : summary.similarityScore >= 55
+          ? "存在明显差异"
+          : "差异很大，疑似非同一演奏段落";
+  lines.push(`综合相似度 ${summary.similarityScore}/100（${verdict}），波形相关系数 ${summary.overallCorrelation.toFixed(3)}。`);
+  if (summary.alignment) {
+    const direction = summary.alignment.offsetMs > 0 ? "晚" : summary.alignment.offsetMs < 0 ? "早" : null;
+    lines.push(
+      direction
+        ? `同段对齐：候选版本相对基线${direction} ${Math.abs(summary.alignment.offsetMs)} ms（对齐相关 ${summary.alignment.correlation.toFixed(3)}）。`
+        : `同段对齐：两版本起点一致（对齐相关 ${summary.alignment.correlation.toFixed(3)}）。`,
+    );
+  }
+  if (summary.meanRmsDeltaDb !== null) {
+    const louder = Math.abs(summary.meanRmsDeltaDb) < 0.3 ? "响度基本一致" : `候选版本平均${summary.meanRmsDeltaDb > 0 ? "响" : "轻"} ${Math.abs(summary.meanRmsDeltaDb).toFixed(2)} dB`;
+    lines.push(`响度归一后：${louder}，逐窗最大偏差 ${summary.maxRmsDeltaDb?.toFixed(2) ?? "0.00"} dB。`);
+  }
+  lines.push(`双方有效重叠覆盖率 ${summary.coveragePct}%。`);
+  if (summary.coveragePct < 60) lines.push("提示：覆盖率偏低，两版本时长或内容差异较大，结论仅供参考。");
+  return lines;
 }
 
 export function describeMissingReview(input: {

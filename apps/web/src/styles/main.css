@@ -100,6 +100,7 @@ input:disabled, button:disabled { opacity: .55; cursor: not-allowed; }
 .alert.info { background: var(--surface-soft); color: #344540; border-color: var(--line); }
 .alert.success { background: #e1f1e9; color: #245f48; border-color: #c2e1d2; }
 .alert.warning { background: var(--warning-soft); color: #79430c; border-color: #eccda9; }
+.inline-error { padding: 10px 14px; border-radius: 10px; background: var(--danger-soft); color: #71261f; border: 1px solid #efc9c3; font-size: .9rem; }
 .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px; font-size: .78rem; font-weight: 750; background: #e7ece9; color: #3f4b47; }
 .badge.COMPLETED, .badge.READY, .badge.ACHIEVED { background: #dff1e8; color: #24644a; }
 .badge.IN_REVIEW, .badge.PROCESSING, .badge.IN_PROGRESS { background: #e2edf8; color: #275d8d; }

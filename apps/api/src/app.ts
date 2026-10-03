@@ -20,6 +20,7 @@ import reviewRoutes from "./routes/review.js";
 import goalRoutes from "./routes/goals.js";
 import statisticsRoutes from "./routes/statistics.js";
 import exportRoutes from "./routes/exports.js";
+import comparisonRoutes from "./routes/comparisons.js";
 import healthRoutes from "./routes/health.js";
 import metricsRoutes, { metricsState } from "./routes/metrics.js";
 
@@ -97,6 +98,7 @@ export async function buildApp() {
   await app.register(goalRoutes, { prefix: "/api/v1/goals" });
   await app.register(statisticsRoutes, { prefix: "/api/v1/statistics" });
   await app.register(exportRoutes, { prefix: "/api/v1/exports" });
+  await app.register(comparisonRoutes, { prefix: "/api/v1" });
 
   return app;
 }

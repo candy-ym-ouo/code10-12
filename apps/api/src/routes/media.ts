@@ -175,6 +175,26 @@ const mediaRoutes: FastifyPluginAsync = async (app) => {
     return { media: updated, probeQueued: true };
   });
 
+  app.get("/media", async (request) => {
+    // 对比台选轨：跨练习列出当前用户已就绪音频（最近优先）
+    const media = await prisma.mediaAsset.findMany({
+      where: { userId: request.authUser!.id, status: "READY" },
+      orderBy: { processedAt: "desc" },
+      take: 200,
+      select: {
+        id: true,
+        sessionId: true,
+        originalName: true,
+        mimeType: true,
+        durationMs: true,
+        processedAt: true,
+        peaks: true,
+        session: { select: { title: true, instrument: true, startedAt: true } },
+      },
+    });
+    return { media };
+  });
+
   app.get("/media/:mediaId", async (request) => {
     const { mediaId } = request.params as { mediaId: string };
     const media = await prisma.mediaAsset.findFirst({

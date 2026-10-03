@@ -136,3 +136,28 @@ Refresh Cookie 路径为 `/api/v1/auth`，生产环境在 HTTPS 下自动使用 
 | `/health/live` | 仅检查进程存活 |
 | `/health/ready` | 检查 PostgreSQL、Redis 和对象存储 |
 | `/metrics` | Prometheus 文本指标 |
+
+## 多版本音频对比台
+
+对比一条演奏的两个历史版本（基线 + 候选），Worker 依次完成：下载解码（纯 TS WAV 直通，压缩格式走可选 ffmpeg）→ BS.1770-4 K 加权积分响度测量 → 目标 LUFS 恒定增益 + 真峰值限制 → 粗到精互相关同段对齐 → 逐窗 RMS/相关差异摘要 → 渲染 24kHz 对齐 WAV 与差异 WAV → 上传产物 → 事务落库。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/comparisons` | 创建对比（两轨；可选 `groupId` 同段续版本，默认目标 -23 LUFS / -1 dBTP） |
+| GET | `/comparisons` | 对比列表（可按 `groupId`、`status` 过滤，游标分页） |
+| GET | `/comparisons/groups/:groupId/revisions` | 同段全部历史版本（revision 升序，只读不可覆盖） |
+| GET | `/comparisons/:id` | 对比详情，含状态、阶段、进度与 `summary` |
+| POST | `/comparisons/:id/resume` | 失败续跑（固定 BullMQ jobId，沿用 worker 本地检查点） |
+| POST | `/comparisons/:id/cancel` | 协作取消（原子置位，删除全部派生对象与临时目录） |
+| DELETE | `/comparisons/:id` | 删除对比记录（进行中先取消；终态直接清派生对象，源音频不动） |
+| GET | `/media` | 跨练习列出已就绪音频（对比台选轨） |
+| GET | `/comparisons/:id/artifacts/:kind/playback-url` | `aligned-0` / `aligned-1` / `diff` 的预签名播放地址 |
+
+关键约束：
+
+- 历史不可覆盖：同一 `groupId` 下 `revision` 由数据库唯一约束保证单调递增，创建冲突自动重试。
+- 失败可续跑：BullMQ 指数退避重试（4 次）+ worker 启动恢复超过 5 分钟未更新的 PENDING/PROCESSING 行；本地 `checkpoint.json` 记录已下载源文件与响度测量结果，成功/取消后删除，`sweepStaleCompareDirs` 兜底清理 24 小时陈旧目录。
+- 取消即清理：处理循环在每个阶段边界轮询 `cancelRequested`；完成提交使用 `cancelRequested = false` 条件更新，取消落库使用非 READY 条件更新，两路径靠行锁互斥，杜绝“取消后又完成”或“完成后产物被删”。
+- 源音频永不被对比流程删除；对比轨对源媒体为 `ON DELETE SET NULL`，源练习删除后历史对比仍可播放对齐产物。
+
+`summary`（JSON）结构：`similarityScore`(0-100)、`overallCorrelation`、`alignment.{offsetMs,correlation}`、`meanRmsDeltaDb`、`maxRmsDeltaDb`、`meanAbsDelta`、`coveragePct`、`alignedDurationMs`、`windowCount`、`worstWindows[]`（差异最大 5 段：时间范围、双版本 RMS、响度差、相关系数）与每轨 `measuredLufs/gainDb/truePeakDb/truePeakLimited`。

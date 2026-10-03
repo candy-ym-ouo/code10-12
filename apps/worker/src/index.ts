@@ -3,13 +3,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { Worker } from "bullmq";
+import { Worker, Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { getConfig } from "./config/env.js";
 import { prisma } from "./lib/prisma.js";
 import { deleteObject, getObjectStream, putObject } from "./lib/s3.js";
 import { generatePeaks, probeAudio } from "./lib/media.js";
 import { buildUserExport } from "./lib/export.js";
+import { cancelComparison, processComparison, recoverStaleComparisons, sweepStaleCompareDirs } from "./lib/comparison.js";
 
 const config = getConfig();
 const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -125,12 +126,23 @@ async function scanOverdueGoals() {
   if (result.count > 0) log("info", { count: result.count }, "overdue goals marked missed");
 }
 
+async function runComparison(comparisonId: string) {
+  await processComparison(prisma, comparisonId, log);
+}
+
+async function cancelComparisonJob(comparisonId: string) {
+  // 处理循环通过 DB 的 cancel_requested 协作退出；取消任务负责保证对象与目录最终被清理（幂等）
+  await cancelComparison(prisma, comparisonId, log);
+}
+
 const worker = new Worker(
   "media-processing",
   async (job) => {
     if (job.name === "probe-media") return processMedia(String(job.data.mediaId));
     if (job.name === "cleanup-session") return cleanupSession(String(job.data.sessionId));
     if (job.name === "export-data") return exportData(String(job.data.exportId));
+    if (job.name === "compare-audio") return runComparison(String(job.data.comparisonId));
+    if (job.name === "cancel-comparison") return cancelComparisonJob(String(job.data.comparisonId));
     throw new Error(`Unknown job: ${job.name}`);
   },
   { connection: redis, concurrency: config.WORKER_CONCURRENCY },
@@ -139,10 +151,20 @@ const worker = new Worker(
 worker.on("failed", (job, error) => log("error", { jobId: job?.id, jobName: job?.name, err: error.message }, "job failed"));
 worker.on("error", (error) => log("error", { err: error.message }, "worker error"));
 
+const queue = new Queue("media-processing", { connection: redis.duplicate() });
+
 const heartbeat = setInterval(async () => {
   await redis.set("worker:heartbeat", new Date().toISOString(), "EX", 30);
 }, 10_000);
 await redis.set("worker:heartbeat", new Date().toISOString(), "EX", 30);
+void sweepStaleCompareDirs()
+  .then((count) => {
+    if (count > 0) log("info", { count }, "stale comparison temp dirs swept");
+  })
+  .catch((error) => log("warn", { err: error instanceof Error ? error.message : String(error) }, "stale dir sweep failed"));
+void recoverStaleComparisons(prisma, queue, log).catch((error) =>
+  log("warn", { err: error instanceof Error ? error.message : String(error) }, "stale comparison recovery failed"),
+);
 await scanOverdueGoals().catch((error) => log("error", { err: error instanceof Error ? error.message : String(error) }, "overdue scan failed"));
 const overdueInterval = setInterval(() => {
   void scanOverdueGoals().catch((error) => log("error", { err: error instanceof Error ? error.message : String(error) }, "overdue scan failed"));
@@ -153,6 +175,7 @@ async function shutdown(signal: string) {
   clearInterval(heartbeat);
   clearInterval(overdueInterval);
   await worker.close();
+  await queue.close();
   await redis.quit();
   await prisma.$disconnect();
   process.exit(0);

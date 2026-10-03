@@ -1,4 +1,4 @@
-import { GetObjectCommand, PutObjectCommand, S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client, DeleteObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import type { Readable } from "node:stream";
 import { getConfig } from "../config/env.js";
 
@@ -34,6 +34,36 @@ export async function putObject(objectKey: string, body: string, contentType: st
   );
 }
 
+export async function putObjectBytes(objectKey: string, body: Buffer | Uint8Array, contentType: string): Promise<void> {
+  await getS3().send(
+    new PutObjectCommand({
+      Bucket: getConfig().S3_BUCKET,
+      Key: objectKey,
+      Body: body,
+      ContentType: contentType,
+    }),
+  );
+}
+
+export async function objectExists(objectKey: string): Promise<boolean> {
+  try {
+    await getS3().send(new HeadObjectCommand({ Bucket: getConfig().S3_BUCKET, Key: objectKey }));
+    return true;
+  } catch (error) {
+    if ((error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) return false;
+    throw error;
+  }
+}
+
 export async function deleteObject(objectKey: string): Promise<void> {
   await getS3().send(new DeleteObjectCommand({ Bucket: getConfig().S3_BUCKET, Key: objectKey }));
+}
+
+/** 尽力删除，不存在也不抛错（用于取消/清理路径）。 */
+export async function deleteObjectQuiet(objectKey: string): Promise<void> {
+  try {
+    await deleteObject(objectKey);
+  } catch {
+    // 清理路径忽略对象存储错误
+  }
 }
